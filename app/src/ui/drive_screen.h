@@ -30,11 +30,8 @@ private:
         enum Mode { NeedConfig, Drives, Folder } mode = NeedConfig;
         std::mutex lock;
         bool loading = false;
-        bool auth_pending = false;
         std::string status;
         std::string error;
-        std::string verification_url;
-        std::string user_code;
         std::string drive_id;
         std::string drive_name;
         std::vector<gdrive::Drive> drives;
@@ -45,7 +42,6 @@ private:
         unsigned generation = 0;
     };
 
-    void connect_google();
     void load_drives();
     void load_folder(const std::string &drive_id, const std::string &parent_id);
     std::shared_ptr<gdrive::Client> m_client;
