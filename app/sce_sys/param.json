@@ -7,9 +7,9 @@
   "attribute": 536870912,
   "attribute2": 0,
   "attribute3": 524352,
-  "conceptId": "99505",
+  "conceptId": "99508",
   "contentBadgeType": 1,
-  "contentId": "UP9000-PPSA99505_00-JELLY50000000000",
+  "contentId": "UP9000-PPSA99508_00-JDRIVE5000000000",
   "contentVersion": "00.007.000",
   "downloadDataSize": 256,
   "gameIntent": {
@@ -25,10 +25,7 @@
   "localizedParameters": {
     "defaultLanguage": "en-US",
     "en-US": {
-      "titleName": "Jelly5"
-    },
-    "nb-NO": {
-      "titleName": "Jelly5"
+      "titleName": "JellyDrive5"
     }
   },
   "masterVersion": "01.00",
@@ -39,6 +36,6 @@
   },
   "requiredSystemSoftwareVersion": "0x0000000000000000",
   "sdkVersion": "0x0000000000000000",
-  "titleId": "PPSA99505",
+  "titleId": "PPSA99508",
   "versionFileUri": ""
 }
