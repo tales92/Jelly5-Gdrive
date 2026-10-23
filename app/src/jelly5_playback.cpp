@@ -33,6 +33,8 @@
 #include <ctime>
 #include <unistd.h>
 
+extern "C" char nuvio_stream_headers[4096];
+
 extern "C" {
 #include "cJSON.h"
 }
@@ -1260,6 +1262,62 @@ bool jelly5_music_enqueue(const std::vector<std::string> &ids, bool next)
 
 /* A title's theme song on its page: the player headless (the caller set that),
  * quiet, and never reported to Jellyfin - it is background, not listening. */
+bool jellydrive_play_url(const std::string &url, const std::string &access_token,
+                         const std::string &title, std::string *error)
+{
+    if (url.rfind("https://www.googleapis.com/drive/v3/files/", 0) != 0 || access_token.empty()) {
+        if (error) *error = "URL do Google Drive ou token de acesso inválido.";
+        return false;
+    }
+
+    // The stream reader in evo_stream_io.c applies this header to every HTTP
+    // request (including byte-range seeks). The token never enters the URL or
+    // playback JSON and is cleared as soon as the player returns.
+    std::snprintf(nuvio_stream_headers, 4096, "Authorization: Bearer %s\\r\\n", access_token.c_str());
+    cJSON *o = cJSON_CreateObject();
+    if (!o) {
+        nuvio_stream_headers[0] = 0;
+        if (error) *error = "Sem memória para preparar a reprodução.";
+        return false;
+    }
+    cJSON_AddStringToObject(o, "id", "gdrive");
+    cJSON_AddStringToObject(o, "url", url.c_str());
+    cJSON_AddStringToObject(o, "playMethod", "DirectPlay");
+    cJSON_AddStringToObject(o, "transcodeReasons", "");
+    cJSON_AddStringToObject(o, "title", title.c_str());
+    cJSON_AddStringToObject(o, "description", "");
+    cJSON_AddStringToObject(o, "genres", "");
+    cJSON_AddStringToObject(o, "runtime", "0");
+    cJSON_AddNumberToObject(o, "startPosition", 0);
+    cJSON_AddStringToObject(o, "itemType", "movie");
+    cJSON *stream = cJSON_CreateObject();
+    if (stream) {
+        cJSON_AddStringToObject(stream, "title", "Google Drive");
+        cJSON_AddStringToObject(stream, "addon", "Google Drive");
+        cJSON_AddItemToObject(o, "stream", stream);
+    }
+    char *raw = cJSON_PrintUnformatted(o);
+    const std::string request = raw ? raw : "";
+    if (raw) std::free(raw);
+    cJSON_Delete(o);
+    if (request.empty()) {
+        nuvio_stream_headers[0] = 0;
+        if (error) *error = "Não foi possível montar a solicitação de vídeo.";
+        return false;
+    }
+
+    evo_audio_set_gain(1.0f);
+    evo_audio_set_speed(1.0f);
+    evo_audio_set_night(settings::get().local.night_mode ? 1 : 0);
+    jelly5_bs_set_allowed(settings::get().local.hdmi_bitstream && !settings::get().local.night_mode
+                              ? JELLY5_BS_AC3 | JELLY5_BS_EAC3 | JELLY5_BS_DTS
+                              : 0);
+    nuvio_player_run(request.c_str());
+    nuvio_stream_headers[0] = 0;
+    nuvio_player_leave();
+    return true;
+}
+
 bool jelly5_play_theme(jf::Client &client, const jf::Item &song)
 {
     jf::Playback pb;
