@@ -9,7 +9,9 @@
 #include "nuvio_input.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 namespace ui {
 
@@ -25,21 +27,18 @@ void DriveScreen::activate()
         std::lock_guard<std::mutex> g(m_state->lock);
         m_state->selected = 0;
         m_state->error.clear();
-    }
-    std::string error;
-    if (!m_client->load_config(&error)) {
-        std::lock_guard<std::mutex> g(m_state->lock);
-        m_state->mode = Shared::NeedConfig;
-        m_state->status = error;
-        return;
+        m_state->login_url.clear();
+        m_state->login_pin.clear();
+        m_state->signin_pending = false;
+        m_state->loading = false;
     }
     if (m_client->has_saved_token()) {
         load_drives();
-    } else {
-        std::lock_guard<std::mutex> g(m_state->lock);
-        m_state->mode = Shared::NeedConfig;
-        m_state->status = "Configure um remote no rclone.conf e reinicie o app.";
+        return;
     }
+    std::lock_guard<std::mutex> g(m_state->lock);
+    m_state->mode = Shared::NeedConfig;
+    m_state->status = "Pressione X para entrar com sua conta Google.";
 }
 
 void DriveScreen::load_drives()
@@ -122,6 +121,7 @@ Action DriveScreen::input(uint32_t p)
     Action a;
     Shared::Mode mode;
     bool loading = false;
+    bool signin_pending = false;
     int selected = 0, count = 0;
     gdrive::Drive drive;
     gdrive::Entry entry;
@@ -130,6 +130,7 @@ Action DriveScreen::input(uint32_t p)
         std::lock_guard<std::mutex> g(m_state->lock);
         mode = m_state->mode;
         loading = m_state->loading;
+        signin_pending = m_state->signin_pending;
         selected = m_state->selected;
         count = mode == Shared::Drives ? (int)m_state->drives.size() :
                 mode == Shared::Folder ? (int)m_state->entries.size() : 0;
@@ -183,7 +184,83 @@ Action DriveScreen::input(uint32_t p)
     if (!(p & NUVIO_BTN_CROSS) || loading)
         return a;
     if (mode == Shared::NeedConfig) {
-        activate();   /* reread rclone.conf after the user fixes the USB configuration */
+        if (signin_pending)
+            return a;
+        {
+            std::lock_guard<std::mutex> g(m_state->lock);
+            m_state->loading = true;
+            m_state->signin_pending = true;
+            m_state->error.clear();
+            m_state->login_url.clear();
+            m_state->login_pin.clear();
+            m_state->status = "Solicitando código de autorização...";
+        }
+        const auto state = m_state;
+        const auto client = m_client;
+        const bool started = jelly5::spawn([state, client] {
+            std::string url, pin, error;
+            if (!client->begin_sign_in(&url, &pin, &error)) {
+                std::lock_guard<std::mutex> g(state->lock);
+                state->loading = false;
+                state->signin_pending = false;
+                state->error = error;
+                state->status = "Não foi possível iniciar o login. Pressione X para tentar novamente.";
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> g(state->lock);
+                state->loading = false;
+                state->login_url = url;
+                state->login_pin = pin;
+                state->status = "Aguardando autorização no celular...";
+            }
+            for (int attempt = 0; attempt < 36; ++attempt) {
+                bool complete = false;
+                std::string poll_error;
+                if (!client->poll_sign_in(&complete, &poll_error)) {
+                    std::lock_guard<std::mutex> g(state->lock);
+                    state->signin_pending = false;
+                    state->error = poll_error;
+                    state->status = "Falha no login. Pressione X para gerar outro código.";
+                    return;
+                }
+                if (complete) {
+                    std::vector<gdrive::Drive> drives;
+                    std::string drives_error;
+                    const bool ok = client->list_shared_drives(&drives, &drives_error);
+                    std::lock_guard<std::mutex> g(state->lock);
+                    state->signin_pending = false;
+                    if (!ok) {
+                        state->error = drives_error;
+                        state->status = "Login feito, mas não foi possível listar os Drives.";
+                        return;
+                    }
+                    state->drives = std::move(drives);
+                    state->entries.clear();
+                    state->folder_ids.clear();
+                    state->folder_names.clear();
+                    state->mode = Shared::Drives;
+                    state->selected = 0;
+                    state->error.clear();
+                    state->status = state->drives.empty()
+                        ? "Conta conectada, mas nenhum Drive compartilhado foi encontrado."
+                        : "Conta conectada. Selecione o Drive de equipe.";
+                    return;
+                }
+                if (attempt + 1 < 36)
+                    std::this_thread::sleep_for(std::chrono::seconds(5));
+            }
+            std::lock_guard<std::mutex> g(state->lock);
+            state->signin_pending = false;
+            state->error = "O código de autorização expirou ou demorou demais.";
+            state->status = "Pressione X para gerar outro código.";
+        });
+        if (!started) {
+            std::lock_guard<std::mutex> g(m_state->lock);
+            m_state->loading = false;
+            m_state->signin_pending = false;
+            m_state->error = "O PS5 não conseguiu iniciar a tarefa de login.";
+        }
         return a;
     }
     if (mode == Shared::Drives) {
@@ -236,14 +313,17 @@ void DriveScreen::draw(double, float)
     glass_panel({64, 58, gfx::W - 128.f, gfx::H - 116.f}, 28, 0.97f, false);
     gfx::text(112, 124, "Google Drive", title_style, alpha(kText, 1.f), 0);
 
-    std::string status, error, path;
+    std::string status, error, path, login_url, login_pin;
     std::vector<std::string> labels;
     int selected = 0;
-    bool loading = false;
+    bool loading = false, signin_pending = false;
     {
         std::lock_guard<std::mutex> g(m_state->lock);
         status = m_state->status;
         error = m_state->error;
+        login_url = m_state->login_url;
+        login_pin = m_state->login_pin;
+        signin_pending = m_state->signin_pending;
         selected = m_state->selected;
         loading = m_state->loading;
         if (m_state->mode == Shared::Drives) {
@@ -260,8 +340,19 @@ void DriveScreen::draw(double, float)
     gfx::text(112, 180, status, status_style, alpha(error.empty() ? kText2 : 0xffff9b91u, 1.f), 0);
     if (!path.empty())
         gfx::text(112, 232, path, status_style, alpha(kText2, 1.f), 0);
+    if (!login_url.empty()) {
+        gfx::text(112, 238, "No celular conectado à mesma rede, abra:", status_style, alpha(kText2, 1.f), 0);
+        gfx::text(112, 282, login_url, {gfx::Medium, 24}, 0xff8ed5ffu, 0);
+        gfx::text(112, 340, "Código de autorização:", status_style, alpha(kText2, 1.f), 0);
+        gfx::text(112, 396, login_pin, {gfx::Bold, 44}, kText, 0);
+        gfx::text(112, 458, signin_pending
+            ? "Depois de autorizar no Google, aguarde nesta tela."
+            : "Pressione X para tentar novamente.", {gfx::Regular, 22}, alpha(kText2, 1.f), 0);
+        gfx::text(112, 506, "Login via drive.signinserver.com; os vídeos são baixados diretamente do Google.",
+                  {gfx::Regular, 18}, alpha(kText3, 1.f), 0);
+    }
     if (!error.empty())
-        gfx::text(112, 340, error, {gfx::Regular, 19}, 0xffff9b91u, 0);
+        gfx::text(112, login_url.empty() ? 340.f : 548.f, error, {gfx::Regular, 19}, 0xffff9b91u, 0);
 
     const float start_y = 294.f;
     const int rows = std::min<int>((int)labels.size(), 10);

@@ -26,6 +26,7 @@ namespace {
 constexpr const char *kConfigPath = "/mnt/usb0/rclone.conf";
 constexpr const char *kSelectorPath = "/mnt/usb0/jellydrive5.json";
 constexpr const char *kTokenPath = "/download0/jelly5/google-drive-token.json";
+constexpr const char *kSigninBase = "https://drive.signinserver.com";
 constexpr const char *kTokenUrl = "https://oauth2.googleapis.com/token";
 constexpr const char *kDriveApi = "https://www.googleapis.com/drive/v3";
 
@@ -82,6 +83,39 @@ std::string url_encode(const std::string &s)
 std::string form_value(const std::string &key, const std::string &value)
 {
     return url_encode(key) + "=" + url_encode(value);
+}
+
+std::string base64_encode(const std::string &input)
+{
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    unsigned int value = 0;
+    int bits = -6;
+    for (unsigned char c : input) {
+        value = (value << 8) | c;
+        bits += 8;
+        while (bits >= 0) {
+            out.push_back(alphabet[(value >> bits) & 0x3f]);
+            bits -= 6;
+        }
+    }
+    if (bits > -6)
+        out.push_back(alphabet[((value << 8) >> (bits + 8)) & 0x3f]);
+    while (out.size() % 4)
+        out.push_back('=');
+    return out;
+}
+
+std::vector<std::string> signin_headers(bool form)
+{
+    std::vector<std::string> headers;
+    if (form)
+        headers.push_back("Content-Type: application/x-www-form-urlencoded");
+    headers.push_back("Accept: application/json");
+    headers.push_back("User-Agent: JellyDrive5/0.2.0");
+    headers.push_back("addon: JellyDrive5 0.2.0");
+    return headers;
 }
 
 bool write_file_atomic(const char *path, const std::string &data)
@@ -280,12 +314,160 @@ bool Client::load_tokens()
     return !m_access_token.empty() || !m_refresh_token.empty();
 }
 
+bool Client::load_saved_signin_session()
+{
+    {
+        std::lock_guard<std::mutex> g(m_lock);
+        if (m_config_loaded)
+            return m_use_signin_server && !m_refresh_token.empty();
+    }
+
+    const std::string text = read_file(kTokenPath, 65536);
+    cJSON *root = cJSON_Parse(text.c_str());
+    if (!root)
+        return false;
+    const std::string auth_type = json_string(root, "auth_type");
+    const std::string access = json_string(root, "access_token");
+    const std::string refresh = json_string(root, "refresh_token");
+    const long long expiry = json_int(root, "expires_at", 0);
+    cJSON_Delete(root);
+    if (auth_type != "signin-server" || refresh.empty())
+        return false;
+
+    std::lock_guard<std::mutex> g(m_lock);
+    if (m_config_loaded)
+        return m_use_signin_server && !m_refresh_token.empty();
+    m_client_id = "signin-server";
+    m_client_secret.clear();
+    m_remote_name = "signin-server";
+    m_preferred_drive_id.clear();
+    m_access_token = access;
+    m_refresh_token = refresh;
+    m_expiry_epoch = expiry;
+    m_use_signin_server = true;
+    m_config_loaded = true;
+    return true;
+}
+
 bool Client::has_saved_token()
 {
-    if (!load_config(nullptr))
+    return load_saved_signin_session();
+}
+
+bool Client::begin_sign_in(std::string *url, std::string *pin, std::string *error)
+{
+    if (error)
+        error->clear();
+    const jf::HttpResponse r = jf::http_request(
+        "POST", std::string(kSigninBase) + "/pin", signin_headers(true),
+        form_value("provider", "googledrive"), 20);
+    if (!r.ok()) {
+        if (error) {
+            *error = "Não foi possível iniciar o login Google";
+            if (r.status)
+                *error += " (HTTP " + std::to_string(r.status) + ")";
+            if (!r.error.empty())
+                *error += ": " + r.error;
+        }
         return false;
-    std::lock_guard<std::mutex> g(m_lock);
-    return !m_refresh_token.empty();
+    }
+    cJSON *root = cJSON_Parse(r.body.c_str());
+    if (!root) {
+        if (error)
+            *error = "O serviço de login retornou uma resposta inválida.";
+        return false;
+    }
+    const std::string new_pin = json_string(root, "pin");
+    const std::string password = json_string(root, "password");
+    cJSON_Delete(root);
+    if (new_pin.empty() || password.empty()) {
+        if (error)
+            *error = "O serviço de login não retornou o código esperado.";
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> g(m_lock);
+        m_pending_pin = new_pin;
+        m_pending_password = password;
+    }
+    if (url)
+        *url = std::string(kSigninBase) + "/signin/" + new_pin;
+    if (pin)
+        *pin = new_pin;
+    return true;
+}
+
+bool Client::poll_sign_in(bool *complete, std::string *error)
+{
+    if (complete)
+        *complete = false;
+    std::string pin, password;
+    {
+        std::lock_guard<std::mutex> g(m_lock);
+        pin = m_pending_pin;
+        password = m_pending_password;
+    }
+    if (pin.empty() || password.empty()) {
+        if (error)
+            *error = "Não existe uma tentativa de login pendente.";
+        return false;
+    }
+
+    std::vector<std::string> headers = signin_headers(false);
+    headers.push_back("Authorization: Basic " + base64_encode(":" + password));
+    const jf::HttpResponse r = jf::http_request(
+        "GET", std::string(kSigninBase) + "/pin/" + url_encode(pin), headers, "", 20);
+    if (!r.ok()) {
+        if (error) {
+            *error = "Não foi possível confirmar a autorização Google";
+            if (r.status)
+                *error += " (HTTP " + std::to_string(r.status) + ")";
+            if (!r.error.empty())
+                *error += ": " + r.error;
+        }
+        return false;
+    }
+    if (r.body.find_first_not_of(" \r\n\t") == std::string::npos)
+        return true; // An empty body means the service is still waiting for approval.
+
+    cJSON *root = cJSON_Parse(r.body.c_str());
+    if (!root) {
+        if (error)
+            *error = "Resposta inválida ao receber os tokens Google.";
+        return false;
+    }
+    const std::string access = json_string(root, "access_token");
+    const std::string refresh = json_string(root, "refresh_token");
+    const long long ttl = json_int(root, "expires_in", 3600);
+    cJSON_Delete(root);
+    if (access.empty() || refresh.empty()) {
+        if (error)
+            *error = "O Google não retornou os tokens necessários. Tente gerar outro código.";
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> g(m_lock);
+        m_client_id = "signin-server";
+        m_client_secret.clear();
+        m_remote_name = "signin-server";
+        m_preferred_drive_id.clear();
+        m_access_token = access;
+        m_refresh_token = refresh;
+        m_expiry_epoch = (long long)std::time(nullptr) + std::max(60LL, ttl);
+        m_use_signin_server = true;
+        m_config_loaded = true;
+        if (!save_tokens()) {
+            if (error)
+                *error = "Login concluído, mas não foi possível salvar o token no PS5.";
+            return false;
+        }
+        m_pending_pin.clear();
+        m_pending_password.clear();
+    }
+    if (complete)
+        *complete = true;
+    return true;
 }
 
 bool Client::save_tokens()
@@ -295,6 +477,8 @@ bool Client::save_tokens()
         return false;
     cJSON_AddStringToObject(root, "client_id", m_client_id.c_str());
     cJSON_AddStringToObject(root, "remote", m_remote_name.c_str());
+    if (m_use_signin_server)
+        cJSON_AddStringToObject(root, "auth_type", "signin-server");
     cJSON_AddStringToObject(root, "access_token", m_access_token.c_str());
     cJSON_AddStringToObject(root, "refresh_token", m_refresh_token.c_str());
     cJSON_AddNumberToObject(root, "expires_at", (double)m_expiry_epoch);
@@ -329,8 +513,11 @@ bool Client::request_token(const std::string &form, std::string *body, std::stri
 
 bool Client::ensure_access_token(std::string *error)
 {
-    if (!load_config(error))
+    if (!load_saved_signin_session()) {
+        if (error)
+            *error = "Conecte sua conta Google pelo botão X na tela do JellyDrive5.";
         return false;
+    }
     std::lock_guard<std::mutex> g(m_lock);
     if (m_access_token.empty() && m_refresh_token.empty())
         load_tokens();
@@ -341,30 +528,37 @@ bool Client::ensure_access_token(std::string *error)
         if (error) *error = "A conta Google não está autorizada. Pressione X em Google Drive para conectar.";
         return false;
     }
-    std::string form = form_value("client_id", m_client_id) + "&" +
-        form_value("client_secret", m_client_secret) + "&" +
-        form_value("refresh_token", m_refresh_token) + "&" +
-        form_value("grant_type", "refresh_token");
-    std::string body;
-    std::string request_error;
-    if (!request_token(form, &body, &request_error)) {
+    const std::string form = form_value("provider", "googledrive") + "&" +
+        form_value("refresh_token", m_refresh_token);
+    const jf::HttpResponse refreshed = jf::http_request(
+        "POST", std::string(kSigninBase) + "/refresh", signin_headers(true), form, 30);
+    if (!refreshed.ok()) {
         m_access_token.clear();
-        if (error) *error = "Não foi possível renovar o token Google: " + request_error;
+        if (error) {
+            *error = "Não foi possível renovar a autorização Google";
+            if (refreshed.status)
+                *error += " (HTTP " + std::to_string(refreshed.status) + ")";
+            if (!refreshed.error.empty())
+                *error += ": " + refreshed.error;
+        }
         return false;
     }
-    cJSON *root = cJSON_Parse(body.c_str());
+    cJSON *root = cJSON_Parse(refreshed.body.c_str());
     if (!root) {
-        if (error) *error = "Resposta de renovação Google inválida.";
+        if (error) *error = "Resposta de renovação do serviço Google inválida.";
         return false;
     }
     const std::string access = json_string(root, "access_token");
+    const std::string refresh = json_string(root, "refresh_token");
     const long long ttl = json_int(root, "expires_in", 3600);
     cJSON_Delete(root);
     if (access.empty()) {
-        if (error) *error = "Google não retornou um access_token renovado.";
+        if (error) *error = "O serviço não retornou um access_token renovado.";
         return false;
     }
     m_access_token = access;
+    if (!refresh.empty())
+        m_refresh_token = refresh;
     m_expiry_epoch = now + std::max(60LL, ttl);
     if (!save_tokens()) {
         if (error) *error = "O token renovado não pôde ser salvo.";

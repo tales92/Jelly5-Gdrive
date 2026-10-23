@@ -30,8 +30,11 @@ private:
         enum Mode { NeedConfig, Drives, Folder } mode = NeedConfig;
         std::mutex lock;
         bool loading = false;
+        bool signin_pending = false;
         std::string status;
         std::string error;
+        std::string login_url;
+        std::string login_pin;
         std::string drive_id;
         std::string drive_name;
         std::vector<gdrive::Drive> drives;
