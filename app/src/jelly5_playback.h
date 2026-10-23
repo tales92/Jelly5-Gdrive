@@ -17,6 +17,11 @@
  * false with *error when the item could not be started. A music track plays
  * on through its album; shuffle: the album in random order from this track. */
 bool jelly5_play(jf::Client &client, const jf::Item &item, std::string *error, bool shuffle = false);
+/* Play one authenticated direct URL without asking a Jellyfin/Emby server.
+ * The bearer token is passed as an HTTP header to the native stream reader. */
+bool jellydrive_play_url(const std::string &url, const std::string &access_token,
+                         const std::string &title, std::string *error);
+
 /* The stop report goes to the server in the background after playback; this
  * waits (up to max_ms) until it has landed, before reading positions back. */
 void jelly5_wait_reports(int max_ms);
