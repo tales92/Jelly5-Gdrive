@@ -33,7 +33,7 @@ jobs:
           echo "$PATH" >> "$GITHUB_PATH"
 
       - name: Build installable PS5 package
-        run: JELLY5_AV1=0 app/scripts/build.sh --release
+        run: JELLYDRIVE_ONLY=1 JELLY5_AV1=0 app/scripts/build.sh --release
 
       - name: Upload PS5 build and diagnostic logs
         if: always()
