@@ -1,0 +1,49 @@
+name: JellyDrive5 PS5 build
+
+on:
+  push:
+    branches:
+      - feature/google-drive-direct
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ps5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang lld llvm curl unzip zip python3-venv nasm meson ninja-build pkg-config libcurl4-openssl-dev
+
+      - name: Prepare the PS5 payload toolchain (without optional AV1 rebuild)
+        run: |
+          LLVM_CONFIG=llvm-config scripts/setup-toolchain.sh --no-av1
+          eval "$(LLVM_CONFIG=llvm-config scripts/setup-toolchain.sh --env)"
+          echo "PS5_PAYLOAD_SDK=$PS5_PAYLOAD_SDK" >> "$GITHUB_ENV"
+          echo "LLVM_CONFIG=$LLVM_CONFIG" >> "$GITHUB_ENV"
+          echo "PS5_LLD=$PS5_LLD" >> "$GITHUB_ENV"
+          echo "EVO_NATIVE_ZLIB=$EVO_NATIVE_ZLIB" >> "$GITHUB_ENV"
+          echo "$PATH" >> "$GITHUB_PATH"
+
+      - name: Build installable PS5 package
+        run: JELLY5_AV1=0 app/scripts/build.sh --release
+
+      - name: Upload PS5 build and diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JellyDrive5-PS5-build
+          if-no-files-found: warn
+          path: |
+            app/build/app/Jelly5-*.zip
+            app/build/app/PPSA99505.ffpfsc
+            app/build/compile.log
+            app/build/link.log
+            app/build/undefined-symbols.txt
