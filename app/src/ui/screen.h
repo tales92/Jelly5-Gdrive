@@ -43,6 +43,7 @@ struct Action {
         PlayFromStart,
         PlayShuffled, /* music: item first, the rest of its album in random order */
         PlayMix,      /* music: Jellyfin's Instant Mix from item */
+        PlayDirect,   /* direct remote URL with a per-stream Authorization token (Google Drive) */
         Open,       /* open item's detail page */
         ToNav,      /* focus moves up into the tab bar */
         Back,       /* leave this (pushed) screen */
@@ -54,6 +55,9 @@ struct Action {
     UserDataChange change;
     std::vector<jf::Item> queue;   /* Play: a queue to play from queue_start (a playlist) */
     size_t queue_start = 0;
+    std::string direct_url;   /* direct source URL; not a Jellyfin server URL */
+    std::string direct_token; /* bearer token used only for this stream */
+    std::string direct_title;
 };
 
 class Screen {
