@@ -1273,7 +1273,7 @@ bool jellydrive_play_url(const std::string &url, const std::string &access_token
     // The stream reader in evo_stream_io.c applies this header to every HTTP
     // request (including byte-range seeks). The token never enters the URL or
     // playback JSON and is cleared as soon as the player returns.
-    std::snprintf(nuvio_stream_headers, 4096, "Authorization: Bearer %s\\r\\n", access_token.c_str());
+    std::snprintf(nuvio_stream_headers, 4096, "Authorization: Bearer %s\r\n", access_token.c_str());
     cJSON *o = cJSON_CreateObject();
     if (!o) {
         nuvio_stream_headers[0] = 0;
