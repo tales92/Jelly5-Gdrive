@@ -1766,7 +1766,9 @@ void shell_input(uint32_t p, jf::Item *play, bool *chose, bool *from_start, bool
     /* L1/R1: the previous / next tab, as across the PS5's own menus. */
     if ((p & (NUVIO_BTN_L1 | NUVIO_BTN_R1)) && s_stack.empty() && !screen_for(s_tab)->modal()) {
         std::vector<int> order = s_nav.tabs();
+#ifndef JELLYDRIVE_ONLY
         order.push_back(ui::Nav::Settings);
+#endif
         const int at = (int)(std::find(order.begin(), order.end(), s_tab) - order.begin());
         const int to = at + ((p & NUVIO_BTN_R1) ? 1 : -1);
         if (at < (int)order.size() && to >= 0 && to < (int)order.size()) {
@@ -2635,6 +2637,25 @@ int main()
     /* 120 Hz where the display has it: smoother menus, and 24p film without 3:2 judder. */
     if (settings::get().local.refresh_120 && evo_agc_runtime_supports_120hz())
         evo_agc_runtime_set_120hz(1);
+#ifdef JELLYDRIVE_ONLY
+    /* Standalone edition: no Jellyfin/Emby account or server is required. */
+    s_boot_has_account = false;
+    s_client = s_boot_client = new_client("");
+    reset_screens();
+    {
+        std::lock_guard<std::mutex> g(s_state.lock);
+        s_state.phase = Phase::Home;
+        s_state.message.clear();
+        s_state.model = ui::HomeModel();
+        s_state.views.clear();
+    }
+    s_model_version = 0;
+    s_home_version = s_model_version;
+    s_tab = s_nav_tab = ui::Nav::Drive;
+    s_nav_focus = false;
+    s_nav.set_tabs({ui::Nav::Drive});
+    s_drive->activate();
+#else
     s_boot_has_account = accounts::last(&s_boot_account);
     s_client = s_boot_client = s_boot_has_account ? client_for(s_boot_account) : new_client(JELLY5_SERVER);
     reset_screens();
@@ -2642,6 +2663,7 @@ int main()
     pthread_t w;
     pthread_create(&w, nullptr, boot, nullptr);
     pthread_detach(w);
+#endif
 
     /* No self-exit: exit() teardown faults in an app process (SIGSYS, seen on
      * hardware and in EVO). The app is closed with the PS button. */
