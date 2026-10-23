@@ -2,8 +2,8 @@
  * JellyDrive5 — Google Drive source for Jelly5 (PS5).
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Configuration is read from /mnt/usb0/jellydrive5.json. OAuth tokens are
- * stored only in /download0/jelly5/google-drive-token.json, never in the repo.
+ * Imports an authorized Drive remote from /mnt/usb0/rclone.conf. Refreshed
+ * OAuth tokens are cached under /download0/jelly5/google-drive-token.json.
  */
 #pragma once
 
