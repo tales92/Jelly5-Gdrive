@@ -1,22 +1,23 @@
-# JellyDrive5 — first test build
+# JellyDrive5 — direct Google Drive alpha
 
-This branch adds an experimental Google Drive source to Jelly5. The intended design is direct access from the PS5: the app calls Google's Drive API, browses shared drives and streams the selected video to the existing native playback engine. No local Jellyfin server is used for the Google Drive source itself.
+This branch builds a separate native PS5 homebrew app named **JellyDrive5**. In this build, its start screen goes directly to Google Drive: no Jellyfin/Emby account or local media server is required.
 
-## Current alpha scope
+## Included in this alpha
 
-- Google OAuth device authorization.
-- Lists Google Shared Drives available to the authorized account.
-- Browses folders and video files; deduplicates entries by Google Drive file ID.
-- Recognizes TMDB IDs in names such as `Film (2022) [tmdbid-12345]`.
-- Sends the video to the existing player as an authenticated HTTP stream, with the OAuth bearer token in the request header (not in the URL).
+- Google OAuth device sign-in (read-only Google Drive scope).
+- Browse Google Shared Drives and navigate folders.
+- List common video files and deduplicate entries by Google Drive file ID within each folder.
+- Parse TMDB IDs in names such as `Film (2022) [tmdbid-12345].mkv`.
+- Send selected videos to Jelly5's existing native player, with the Google OAuth bearer token passed as an HTTP header rather than embedded in the URL.
+- A separate PS5 title ID (`PPSA99508`) so the test app does not overwrite the normal Jelly5 installation.
 
-This is an early integration build. It does not yet download posters or fetch full TMDB metadata, and playback has not yet been verified on physical PS5 hardware. The app startup still follows the existing Jelly5 sign-in flow; fully bypassing that gate for Drive-only use is a follow-up step.
+This is a testable first alpha, not yet a full poster-based TMDB library. The folder browser uses the existing Drive folder structure; TMDB posters/details, recursive whole-library scan, and physical-console playback verification are still follow-up work.
 
 ## Google OAuth setup
 
-Google requires the application to provide its own OAuth client ID. Create an OAuth client intended for a TV / limited-input device in Google Cloud, enable the Google Drive API, and configure the consent screen for the account(s) to use the app. Use the read-only Drive scope.
+Google requires an OAuth client ID. In Google Cloud, create a client for a TV / limited-input device, enable Google Drive API, and configure the consent screen/account for testing. The app requests read-only Drive access.
 
-Create a UTF-8 file on the root of a USB drive named `jellydrive5.json`:
+Create a UTF-8 file at the root of a FAT32/exFAT USB drive named `jellydrive5.json`:
 
 ```json
 {
@@ -24,13 +25,19 @@ Create a UTF-8 file on the root of a USB drive named `jellydrive5.json`:
 }
 ```
 
-Connect the USB drive to the PS5 before starting Jelly5. The app reads `/mnt/usb0/jellydrive5.json`. The first time you open Google Drive, press X to start authorization. Visit the shown Google verification URL on a phone/computer, enter the displayed code and approve the account. The access and refresh tokens are saved under `/download0/jelly5/google-drive-token.json`.
+Connect the USB drive to the PS5 before launching JellyDrive5. The app reads `/mnt/usb0/jellydrive5.json`. On the Google Drive screen, press X. Open the displayed verification URL on your phone/computer, enter the displayed code and approve the account. The app then lists available Shared Drives.
 
-The account must have access to the Shared Drives. The app only requests read-only scope; it does not upload, move, or delete Drive content.
+OAuth tokens are stored under `/download0/jelly5/google-drive-token.json` on the PS5. Keep them private. No tokens, Google credentials or `rclone.conf` belong in GitHub.
 
-## Security and test notes
+## Test build
 
-- Never commit `jellydrive5.json`, OAuth tokens, `rclone.conf`, or other credentials into GitHub.
-- Keep the config USB-connected for first configuration; tokens are saved to PS5 storage after authorization.
-- Google API access and large-library performance depend on the account's Drive permissions, network and API quotas.
-- This initial build will not appear as a release until GitHub Actions completes successfully. The installable package is expected as the `JellyDrive5-PS5-build` workflow artifact.
+Open the [GitHub Actions build](https://github.com/tales92/Jelly5-Gdrive/actions/workflows/jellydrive5-build.yml). Download the artifact named `JellyDrive5-PS5-build` from the latest successful run. It contains the installable package and diagnostics.
+
+Install the app using the homebrew package-install method appropriate for the console's jailbreak/firmware. The build is unsigned in the retail-PlayStation sense and is intended for the compatible homebrew environment only.
+
+## Alpha limitations
+
+- The app browses the Drive and can open a selected video, but does not yet draw TMDB posters or enriched metadata.
+- Duplicate prevention uses the Google Drive file ID for entries in each folder. A global recursive library index is not implemented yet.
+- The first build must be tested on the target PS5 for Google OAuth, redirects/byte-range seeking and codecs; the GitHub Actions build alone is not proof of successful console playback.
+- Only read operations are implemented: the app does not upload, move or delete Drive files.
