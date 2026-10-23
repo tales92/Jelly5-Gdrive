@@ -62,6 +62,9 @@ private:
 
     mutable std::mutex m_lock;
     std::string m_client_id;
+    std::string m_client_secret;
+    std::string m_remote_name;
+    std::string m_preferred_drive_id;
     std::string m_access_token;
     std::string m_refresh_token;
     long long m_expiry_epoch = 0;
