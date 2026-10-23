@@ -2531,6 +2531,7 @@ bool start_film()
     for_each_library([](ui::Library *lib) { lib->mark_stale(); });   /* played marks: when next shown */
     if (!s_stack.empty())
         s_stack.back()->activate();   /* a detail page reloads its progress */
+#ifndef JELLYDRIVE_ONLY
     jf::Client *c = s_client;
     const unsigned session = s_session;
     jelly5::spawn([c, session] {
@@ -2538,6 +2539,7 @@ bool start_film()
         load_home(*c, session, true);
         load_extras(*c, session);   /* what was just watched shapes "Fordi du så" */
     });
+#endif
     return true;
 }
 
