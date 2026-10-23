@@ -11,6 +11,7 @@
 
 #include <curl/curl.h>
 #include <strings.h>
+#include <cctype>
 
 namespace jf {
 
@@ -43,10 +44,17 @@ HttpResponse http_request(const std::string &method, const std::string &url,
     HttpResponse res;
     CURL *c = curl_easy_init();
     curl_slist *hl = nullptr;
-    for (const auto &h : headers)
+    bool has_content_type = false;
+    for (const auto &h : headers) {
         hl = curl_slist_append(hl, h.c_str());
+        std::string lower = h;
+        for (char &ch : lower)
+            ch = (char)std::tolower((unsigned char)ch);
+        has_content_type = has_content_type || lower.rfind("content-type:", 0) == 0;
+    }
     if (!body.empty()) {
-        hl = curl_slist_append(hl, "Content-Type: application/json");
+        if (!has_content_type)
+            hl = curl_slist_append(hl, "Content-Type: application/json");
         curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.c_str());
     }
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
