@@ -2760,7 +2760,7 @@ int main()
             stop_music(false);
             gfx::begin_frame();
             gfx::fill({0, 0, gfx::W, gfx::H}, 0xff080b10u);
-            glass_panel({120, 390, gfx::W - 240.f, 230}, 28, 0.96f, false);
+            ui::glass_panel({120, 390, gfx::W - 240.f, 230}, 28, 0.96f, false);
             gfx::text(gfx::W / 2, 470, "Google Drive", {gfx::Bold, 38}, ui::alpha(ui::kText, 1.f), 1);
             gfx::text(gfx::W / 2, 530, direct_title, {gfx::Medium, 24}, ui::alpha(ui::kText2, 1.f), 1);
             gfx::text(gfx::W / 2, 580, "Preparando reprodução...", {gfx::Regular, 22}, ui::alpha(ui::kText3, 1.f), 1);
