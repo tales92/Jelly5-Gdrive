@@ -25,8 +25,6 @@ void DriveScreen::activate()
         std::lock_guard<std::mutex> g(m_state->lock);
         m_state->selected = 0;
         m_state->error.clear();
-        m_state->verification_url.clear();
-        m_state->user_code.clear();
     }
     std::string error;
     if (!m_client->load_config(&error)) {
@@ -44,75 +42,6 @@ void DriveScreen::activate()
     }
 }
 
-void DriveScreen::connect_google()
-{
-    {
-        std::lock_guard<std::mutex> g(m_state->lock);
-        if (m_state->loading)
-            return;
-        m_state->loading = true;
-        m_state->auth_pending = false;
-        m_state->error.clear();
-        m_state->status = "Conectando ao Google...";
-    }
-    const auto state = m_state;
-    const auto client = m_client;
-    const bool started = jelly5::spawn([state, client] {
-        std::string url, code, device, error;
-        int expires = 600, interval = 5;
-        if (!client->begin_device_auth(&url, &code, &device, &expires, &interval, &error)) {
-            std::lock_guard<std::mutex> g(state->lock);
-            state->loading = false;
-            state->auth_pending = false;
-            state->error = error;
-            state->status = "Não foi possível iniciar o login Google.";
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> g(state->lock);
-            state->verification_url = url;
-            state->user_code = code;
-            state->auth_pending = true;
-            state->status = "Abra o endereço e digite o código exibido.";
-        }
-        if (!client->finish_device_auth(device, expires, interval, &error)) {
-            std::lock_guard<std::mutex> g(state->lock);
-            state->loading = false;
-            state->auth_pending = false;
-            state->error = error;
-            state->status = "A autenticação Google falhou.";
-            return;
-        }
-        std::vector<gdrive::Drive> drives;
-        if (!client->list_shared_drives(&drives, &error)) {
-            std::lock_guard<std::mutex> g(state->lock);
-            state->loading = false;
-            state->auth_pending = false;
-            state->error = error;
-            state->status = "Login concluído, mas não foi possível listar os Drives.";
-            return;
-        }
-        std::lock_guard<std::mutex> g(state->lock);
-        state->drives = std::move(drives);
-        state->entries.clear();
-        state->folder_ids.clear();
-        state->folder_names.clear();
-        state->mode = Shared::Drives;
-        state->selected = 0;
-        state->loading = false;
-        state->auth_pending = false;
-        state->status = state->drives.empty() ? "Nenhum Drive compartilhado foi encontrado."
-                                             : "Selecione o Drive de equipe.";
-        state->error.clear();
-    });
-    if (!started) {
-        std::lock_guard<std::mutex> g(m_state->lock);
-        m_state->loading = false;
-        m_state->error = "Não foi possível criar uma tarefa em segundo plano.";
-        m_state->status = "Falha ao iniciar a conexão.";
-    }
-}
-
 void DriveScreen::load_drives()
 {
     {
@@ -120,7 +49,6 @@ void DriveScreen::load_drives()
         if (m_state->loading)
             return;
         m_state->loading = true;
-        m_state->auth_pending = false;
         m_state->error.clear();
         m_state->status = "Listando Drives compartilhados...";
     }
@@ -193,7 +121,7 @@ Action DriveScreen::input(uint32_t p)
 {
     Action a;
     Shared::Mode mode;
-    bool loading = false, auth_pending = false;
+    bool loading = false;
     int selected = 0, count = 0;
     gdrive::Drive drive;
     gdrive::Entry entry;
@@ -202,7 +130,6 @@ Action DriveScreen::input(uint32_t p)
         std::lock_guard<std::mutex> g(m_state->lock);
         mode = m_state->mode;
         loading = m_state->loading;
-        auth_pending = m_state->auth_pending;
         selected = m_state->selected;
         count = mode == Shared::Drives ? (int)m_state->drives.size() :
                 mode == Shared::Folder ? (int)m_state->entries.size() : 0;
@@ -227,7 +154,7 @@ Action DriveScreen::input(uint32_t p)
         return a;
     }
     if (p & NUVIO_BTN_CIRCLE) {
-        if (loading || auth_pending)
+        if (loading)
             return a;
         if (mode == Shared::Folder) {
             bool root = false;
@@ -309,19 +236,16 @@ void DriveScreen::draw(double, float)
     glass_panel({64, 58, gfx::W - 128.f, gfx::H - 116.f}, 28, 0.97f, false);
     gfx::text(112, 124, "Google Drive", title_style, alpha(kText, 1.f), 0);
 
-    std::string status, error, verification_url, user_code, path;
+    std::string status, error, path;
     std::vector<std::string> labels;
     int selected = 0;
-    bool loading = false, auth_pending = false;
+    bool loading = false;
     {
         std::lock_guard<std::mutex> g(m_state->lock);
         status = m_state->status;
         error = m_state->error;
-        verification_url = m_state->verification_url;
-        user_code = m_state->user_code;
         selected = m_state->selected;
         loading = m_state->loading;
-        auth_pending = m_state->auth_pending;
         if (m_state->mode == Shared::Drives) {
             for (const auto &d : m_state->drives)
                 labels.push_back("  " + d.name);
@@ -334,16 +258,12 @@ void DriveScreen::draw(double, float)
     }
 
     gfx::text(112, 180, status, status_style, alpha(error.empty() ? kText2 : 0xffff9b91u, 1.f), 0);
-    if (!verification_url.empty()) {
-        gfx::text(112, 248, "Acesse: " + verification_url, {gfx::SemiBold, 25}, alpha(kText, 1.f), 0);
-        gfx::text(112, 292, "Codigo: " + user_code, {gfx::Bold, 34}, 0xff8ed5ffu, 0);
-    } else if (!path.empty()) {
+    if (!path.empty())
         gfx::text(112, 232, path, status_style, alpha(kText2, 1.f), 0);
-    }
     if (!error.empty())
         gfx::text(112, 340, error, {gfx::Regular, 19}, 0xffff9b91u, 0);
 
-    const float start_y = !verification_url.empty() ? 372.f : 294.f;
+    const float start_y = 294.f;
     const int rows = std::min<int>((int)labels.size(), 10);
     for (int i = 0; i < rows; ++i) {
         const float y = start_y + i * 48.f;
@@ -352,7 +272,7 @@ void DriveScreen::draw(double, float)
             glass_panel({96, y - 30, gfx::W - 192.f, 42}, 12, 0.72f, false);
         gfx::text(120, y, labels[i], row_style, color, 0);
     }
-    if (loading && !auth_pending)
+    if (loading)
         gfx::text(gfx::W - 112, gfx::H - 74, "Carregando...", status_style, alpha(kText2, 1.f), 2);
     gfx::text(112, gfx::H - 74, "X: selecionar/reproduzir    O: voltar    ↑/↓: navegar",
               {gfx::Regular, 20}, alpha(kText3, 1.f), 0);
