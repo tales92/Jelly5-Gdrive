@@ -40,7 +40,7 @@ void DriveScreen::activate()
     } else {
         std::lock_guard<std::mutex> g(m_state->lock);
         m_state->mode = Shared::NeedConfig;
-        m_state->status = "Pressione X para autorizar sua conta Google.";
+        m_state->status = "Configure um remote no rclone.conf e reinicie o app.";
     }
 }
 
@@ -256,10 +256,7 @@ Action DriveScreen::input(uint32_t p)
     if (!(p & NUVIO_BTN_CROSS) || loading)
         return a;
     if (mode == Shared::NeedConfig) {
-        if (m_client->configured())
-            connect_google();
-        else
-            activate();
+        activate();   /* reread rclone.conf after the user fixes the USB configuration */
         return a;
     }
     if (mode == Shared::Drives) {
