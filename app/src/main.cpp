@@ -30,6 +30,7 @@
 #include "gfx/gfx_pool.h"
 #include "ui/album.h"
 #include "ui/detail.h"
+#include "ui/drive_screen.h"
 #include "ui/home.h"
 #include "ui/library.h"
 #include "ui/livetv.h"
@@ -1318,6 +1319,7 @@ void *boot(void *)
 
 /* ---- screens --------------------------------------------------------------------- */
 std::unique_ptr<ui::Home> s_home, s_discover;   /* s_discover: Seerr's tab */
+std::unique_ptr<ui::DriveScreen> s_drive;
 std::unique_ptr<ui::Library> s_movies, s_shows, s_music;
 std::unique_ptr<ui::LiveTv> s_livetv;
 std::unique_ptr<ui::Search> s_search;
@@ -1528,6 +1530,7 @@ void reset_screens()
     s_livetv.reset(new ui::LiveTv(*s_client));
     s_search.reset(new ui::Search(*s_client));
     s_settings.reset(new ui::SettingsScreen(*s_client));
+    s_drive.reset(new ui::DriveScreen());
     s_tab = s_nav_tab = ui::Nav::Home;
     s_nav_focus = false;
     std::lock_guard<std::mutex> g(s_state.lock);
@@ -1667,6 +1670,7 @@ ui::Screen *screen_for(int tab)
     case ui::Nav::Discover: return s_discover.get();
     case ui::Nav::Search: return s_search.get();
     case ui::Nav::Settings: return s_settings.get();
+    case ui::Nav::Drive: return s_drive.get();
     default: return s_home.get();
     }
 }
@@ -1745,7 +1749,8 @@ void resolve_play(const remote::Command &rc, bool remote)
 }
 
 /* Top-level input once signed in: the tab bar, or the active screen. */
-void shell_input(uint32_t p, jf::Item *play, bool *chose, bool *from_start, bool *shuffle)
+void shell_input(uint32_t p, jf::Item *play, bool *chose, bool *from_start, bool *shuffle,
+                  bool *direct_chosen, std::string *direct_url, std::string *direct_token, std::string *direct_title)
 {
     if ((p & NUVIO_BTN_TOUCHPAD) && s_music_on) {   /* the mini player: the now-playing page */
         s_nav_focus = false;
@@ -1828,6 +1833,12 @@ void shell_input(uint32_t p, jf::Item *play, bool *chose, bool *from_start, bool
         *shuffle = a.kind == ui::Action::PlayShuffled;
         s_queue = a.queue;
         s_queue_start = a.queue_start;
+        break;
+    case ui::Action::PlayDirect:
+        *direct_chosen = true;
+        *direct_url = a.direct_url;
+        *direct_token = a.direct_token;
+        *direct_title = a.direct_title;
         break;
     case ui::Action::PlayMix: {   /* Jellyfin's Instant Mix from an album (or song, artist): found on a worker */
         if (resolving())
@@ -1988,6 +1999,7 @@ bool apply_views(const std::vector<jf::Item> &views)
     s_tabs_shown = {!movies.empty(), !shows.empty(), !music.empty()};
     if (seerr_service::available())
         tabs.push_back(ui::Nav::Discover);
+    tabs.push_back(ui::Nav::Drive);
     tabs.push_back(ui::Nav::Search);
     s_nav.set_tabs(tabs);
     /* A tab that went away (another account, a library removed): back home. */
@@ -2404,6 +2416,8 @@ struct FilmWaiting {
     bool shuffle;
     std::vector<jf::Item> queue;
     size_t start;
+    std::string direct_url, direct_token, direct_title;
+    bool direct = false;
 };
 std::unique_ptr<FilmWaiting> s_film;
 bool start_film();
@@ -2498,8 +2512,9 @@ bool start_film()
     nuvio_input_close();
     nuvio_player_set_headless(0);
     std::string error;
-    const bool ok = w.queue.size() > 1 ? jelly5_play_queue(*s_client, w.queue, w.start, &error)
-                                       : jelly5_play(*s_client, w.item, &error, w.shuffle);
+    const bool ok = w.direct ? jellydrive_play_url(w.direct_url, w.direct_token, w.direct_title, &error)
+                     : w.queue.size() > 1 ? jelly5_play_queue(*s_client, w.queue, w.start, &error)
+                                          : jelly5_play(*s_client, w.item, &error, w.shuffle);
     if (!ok)
         notify((T("Jelly5: kunne ikke spille av\n") + error).c_str());
     nuvio_input_open(s_user);
@@ -2696,7 +2711,8 @@ int main()
         }
 
         jf::Item chosen;
-        bool chose = false, from_start = false, shuffle = false;
+        bool chose = false, from_start = false, shuffle = false, direct_chosen = false;
+        std::string direct_url, direct_token, direct_title;
         if (in.pressed) {
             if (phase == Phase::Gate)
                 gate_input(in.pressed);
@@ -2705,10 +2721,26 @@ int main()
                 open_gate({accounts::load().empty() ? Gate::Login : Gate::Profiles, s_client->server(), "", false});
                 set_phase(Phase::Gate);
             } else if (phase == Phase::Home && s_home_version == s_model_version)
-                shell_input(in.pressed, &chosen, &chose, &from_start, &shuffle);
+                shell_input(in.pressed, &chosen, &chose, &from_start, &shuffle, &direct_chosen,
+                            &direct_url, &direct_token, &direct_title);
         }
         if (phase == Phase::Gate)
             gate_poll();
+        if (direct_chosen) {
+            stop_theme();
+            stop_music(false);
+            gfx::begin_frame();
+            gfx::fill({0, 0, gfx::W, gfx::H}, 0xff080b10u);
+            glass_panel({120, 390, gfx::W - 240.f, 230}, 28, 0.96f, false);
+            gfx::text(gfx::W / 2, 470, "Google Drive", {gfx::Bold, 38}, ui::alpha(ui::kText, 1.f), 1);
+            gfx::text(gfx::W / 2, 530, direct_title, {gfx::Medium, 24}, ui::alpha(ui::kText2, 1.f), 1);
+            gfx::text(gfx::W / 2, 580, "Preparando reprodução...", {gfx::Regular, 22}, ui::alpha(ui::kText3, 1.f), 1);
+            gfx::end_frame();
+            s_film.reset(new FilmWaiting{jf::Item(), false, {}, 0, direct_url, direct_token, direct_title, true});
+            last = now_s();
+            waited = true;
+            continue;
+        }
         if (lang_gen != i18n::generation()) {   /* Innstillinger -> Språk: rebuild the text that was built */
             lang_gen = i18n::generation();
             s_movies->set_title(T("Filmer"));
