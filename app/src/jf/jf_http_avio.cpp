@@ -59,10 +59,17 @@ HttpResponse http_request(const std::string &method, const std::string &url,
     av_dict_set(&opts, "method", method.c_str(), 0);
     av_dict_set(&opts, "reconnect", "0", 0);
     std::string head;
-    for (const auto &h : headers)
+    bool has_content_type = false;
+    for (const auto &h : headers) {
         head += h + "\r\n";
+        std::string lower = h;
+        for (char &ch : lower)
+            ch = (char)std::tolower((unsigned char)ch);
+        has_content_type = has_content_type || lower.rfind("content-type:", 0) == 0;
+    }
     if (!body.empty()) {
-        head += "Content-Type: application/json\r\n";
+        if (!has_content_type)
+            head += "Content-Type: application/json\r\n";
         av_dict_set(&opts, "post_data", hex_of(body).c_str(), 0);
     }
     if (!head.empty())
