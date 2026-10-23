@@ -1973,6 +1973,13 @@ void shell_input(uint32_t p, jf::Item *play, bool *chose, bool *from_start, bool
  * Home, as a tab switch does (after s_state.lock, which the caller holds here). */
 bool apply_views(const std::vector<jf::Item> &views)
 {
+#ifdef JELLYDRIVE_ONLY
+    (void)views;
+    s_tabs_shown = {false, false, false};
+    s_nav.set_tabs({ui::Nav::Drive});
+    s_tab = s_nav_tab = ui::Nav::Drive;
+    return false;
+#endif
     using Source = ui::Library::Source;
     std::vector<Source> movies, shows, music;
     std::string playlists;
