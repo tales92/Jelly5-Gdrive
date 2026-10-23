@@ -162,6 +162,7 @@ JELLY5_DEFS="-DJELLY5_VERSION=\\\"$(python3 -c 'import json,sys;print(json.load(
 # JELLY5_REMOTE_LOG=1: a remote test build (issue #12), raw remote samples in
 # /download0/jelly5/remote-log.txt.
 [[ -n "${JELLY5_REMOTE_LOG:-}" ]] && JELLY5_DEFS+=" -DJELLY5_REMOTE_LOG=1"
+[[ "${JELLYDRIVE_ONLY:-0}" == 1 ]] && JELLY5_DEFS+=" -DJELLYDRIVE_ONLY=1"
 [[ -n "${LOG_HOST}" ]] && JELLY5_DEFS+=" -DJELLY5_LOG_HOST=\\\"${LOG_HOST}\\\" -DJELLY5_LOG_PORT=${JELLY5_LOG_PORT:-5555}"
 ok "log -> ${LOG_HOST:-none}:${JELLY5_LOG_PORT:-5555}, server ${JF_URL:-default}, Seerr ${SEERR_URL:-not set}"
 (( AV1_ON )) && ok "AV1: FFmpeg + dav1d from ${FF_LIB%/lib}"
