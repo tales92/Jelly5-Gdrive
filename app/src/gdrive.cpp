@@ -505,6 +505,11 @@ bool Client::list_shared_drives(std::vector<Drive> *out, std::string *error)
         if (page.empty())
             break;
     }
+    if (!m_preferred_drive_id.empty()) {
+        std::stable_sort(result.begin(), result.end(), [this](const Drive &a, const Drive &b) {
+            return (a.id == m_preferred_drive_id) && (b.id != m_preferred_drive_id);
+        });
+    }
     *out = std::move(result);
     return true;
 }
