@@ -26,7 +26,6 @@ namespace {
 constexpr const char *kConfigPath = "/mnt/usb0/rclone.conf";
 constexpr const char *kSelectorPath = "/mnt/usb0/jellydrive5.json";
 constexpr const char *kTokenPath = "/download0/jelly5/google-drive-token.json";
-constexpr const char *kDeviceCodeUrl = "https://oauth2.googleapis.com/device/code";
 constexpr const char *kTokenUrl = "https://oauth2.googleapis.com/token";
 constexpr const char *kDriveApi = "https://www.googleapis.com/drive/v3";
 
@@ -326,101 +325,6 @@ bool Client::request_token(const std::string &form, std::string *body, std::stri
     if (body)
         *body = r.body;
     return true;
-}
-
-bool Client::begin_device_auth(std::string *verification_url, std::string *user_code, std::string *device_code,
-                               int *expires_in, int *interval, std::string *error)
-{
-    if (!load_config(error))
-        return false;
-    const std::string form = form_value("client_id", m_client_id) + "&" +
-        form_value("scope", "https://www.googleapis.com/auth/drive.readonly");
-    const jf::HttpResponse r = jf::http_request(
-        "POST", kDeviceCodeUrl,
-        {"Content-Type: application/x-www-form-urlencoded", "Accept: application/json",
-         "User-Agent: JellyDrive5/0.1"}, form, 20);
-    if (!request_ok(r, error, "Não foi possível iniciar a autenticação Google"))
-        return false;
-    cJSON *root = cJSON_Parse(r.body.c_str());
-    if (!root) {
-        if (error) *error = "Resposta de autenticação do Google inválida.";
-        return false;
-    }
-    const std::string device = json_string(root, "device_code");
-    const std::string code = json_string(root, "user_code");
-    std::string url = json_string(root, "verification_url");
-    if (url.empty())
-        url = json_string(root, "verification_uri");
-    const int expires = (int)json_int(root, "expires_in", 600);
-    const int every = (int)json_int(root, "interval", 5);
-    cJSON_Delete(root);
-    if (device.empty() || code.empty() || url.empty()) {
-        if (error) *error = "Google não forneceu o código de dispositivo. Confira o client_id e o tipo do OAuth.";
-        return false;
-    }
-        if (verification_url) *verification_url = url;
-    if (user_code) *user_code = code;
-    if (device_code) *device_code = device;
-    if (expires_in) *expires_in = expires;
-    if (interval) *interval = every;
-    return true;
-}
-
-bool Client::finish_device_auth(const std::string &device_code, int expires_in, int interval,
-                               std::string *error)
-{
-    if (!load_config(error))
-        return false;
-    if (interval < 1) interval = 5;
-    const long long deadline = (long long)std::time(nullptr) + std::max(60, expires_in);
-    int pending_count = 0;
-    while ((long long)std::time(nullptr) < deadline) {
-        usleep((useconds_t)interval * 1000000u);
-        const std::string form = form_value("client_id", m_client_id) + "&" +
-            form_value("device_code", device_code) + "&" +
-            form_value("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
-        std::string body;
-        std::string ignored;
-        if (!request_token(form, &body, &ignored)) {
-            // Google returns HTTP 400 while the user has not approved yet. The
-            // console HTTP shim deliberately hides error bodies, so treat 400
-            // as pending until the device-code expiry and stop on other errors.
-            if (ignored.find("400") == std::string::npos) {
-                if (error) *error = ignored;
-                return false;
-            }
-            if (++pending_count % 4 == 0)
-                interval = std::min(interval + 1, 15);
-            continue;
-        }
-        cJSON *root = cJSON_Parse(body.c_str());
-        if (!root) {
-            if (error) *error = "Resposta de token Google inválida.";
-            return false;
-        }
-        const std::string access = json_string(root, "access_token");
-        const std::string refresh = json_string(root, "refresh_token");
-        const long long ttl = json_int(root, "expires_in", 3600);
-        cJSON_Delete(root);
-        if (access.empty()) {
-            if (error) *error = "Google respondeu sem access_token.";
-            return false;
-        }
-        {
-            std::lock_guard<std::mutex> g(m_lock);
-            m_access_token = access;
-            if (!refresh.empty())
-                m_refresh_token = refresh;
-            m_expiry_epoch = (long long)std::time(nullptr) + std::max(60LL, ttl);
-            if (!save_tokens()) {
-                if (error) *error = "Token obtido, mas não foi possível gravá-lo em /download0/jelly5.";
-                return false;
-            }
-        }
-        return true;
-    }
-    if (error) *error = "O código de autorização Google expirou. Tente conectar novamente.";
-    return false;
 }
 
 bool Client::ensure_access_token(std::string *error)
