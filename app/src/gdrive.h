@@ -37,13 +37,6 @@ public:
     bool configured() const;
     bool has_saved_token();
 
-    // Starts Google's Device Authorization Grant. The user completes sign-in
-    // on a phone/computer using verification_url and user_code.
-    bool begin_device_auth(std::string *verification_url, std::string *user_code, std::string *device_code,
-                           int *expires_in, int *interval, std::string *error);
-    bool finish_device_auth(const std::string &device_code, int expires_in, int interval,
-                            std::string *error);
-
     bool list_shared_drives(std::vector<Drive> *out, std::string *error);
     bool list_folder(const std::string &drive_id, const std::string &parent_id,
                      std::vector<Entry> *out, std::string *error);
