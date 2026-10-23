@@ -8,6 +8,7 @@
 #include "jf_http.h"
 
 #include <cstdio>
+#include <cctype>
 
 extern "C" {
 #include <libavformat/avio.h>
