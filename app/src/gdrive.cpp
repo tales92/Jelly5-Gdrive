@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <ctime>
 #include <set>
+#include <map>
+#include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -21,7 +23,8 @@ extern "C" {
 namespace gdrive {
 namespace {
 
-constexpr const char *kConfigPath = "/mnt/usb0/jellydrive5.json";
+constexpr const char *kConfigPath = "/mnt/usb0/rclone.conf";
+constexpr const char *kSelectorPath = "/mnt/usb0/jellydrive5.json";
 constexpr const char *kTokenPath = "/download0/jelly5/google-drive-token.json";
 constexpr const char *kDeviceCodeUrl = "https://oauth2.googleapis.com/device/code";
 constexpr const char *kTokenUrl = "https://oauth2.googleapis.com/token";
@@ -119,27 +122,130 @@ bool request_ok(const jf::HttpResponse &r, std::string *error, const char *what)
     return false;
 }
 
+std::string trim(std::string s)
+{
+    while (!s.empty() && std::isspace((unsigned char)s.front()))
+        s.erase(s.begin());
+    while (!s.empty() && std::isspace((unsigned char)s.back()))
+        s.pop_back();
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+        s = s.substr(1, s.size() - 2);
+    return s;
+}
+
+using IniRemote = std::map<std::string, std::string>;
+
+std::map<std::string, IniRemote> parse_rclone_config(const std::string &text)
+{
+    std::map<std::string, IniRemote> remotes;
+    std::istringstream stream(text);
+    std::string line, section;
+    while (std::getline(stream, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#' || line[0] == ';')
+            continue;
+        if (line.front() == '[' && line.back() == ']') {
+            section = trim(line.substr(1, line.size() - 2));
+            continue;
+        }
+        const size_t eq = line.find('=');
+        if (section.empty() || eq == std::string::npos)
+            continue;
+        const std::string key = lower(trim(line.substr(0, eq)));
+        const std::string value = trim(line.substr(eq + 1));
+        if (!key.empty())
+            remotes[section][key] = value;
+    }
+    return remotes;
+}
+
 } // namespace
 
 bool Client::load_config(std::string *error)
 {
     std::lock_guard<std::mutex> g(m_lock);
-    if (m_config_loaded && !m_client_id.empty())
+    if (m_config_loaded && !m_client_id.empty() && !m_client_secret.empty() && !m_refresh_token.empty())
         return true;
-    m_config_loaded = true;
-    const std::string text = read_file(kConfigPath, 65536);
-    cJSON *root = cJSON_Parse(text.c_str());
-    if (!root) {
+
+    const std::string ini_text = read_file(kConfigPath, 4u << 20);
+    if (ini_text.empty()) {
         if (error)
-            *error = std::string("Crie ") + kConfigPath +
-                     " no USB com {\"client_id\":\"SEU_CLIENT_ID.apps.googleusercontent.com\"}.";
+            *error = std::string("Copie o rclone.conf para a raiz do USB: ") + kConfigPath;
         return false;
     }
-    m_client_id = json_string(root, "client_id");
-    cJSON_Delete(root);
-    if (m_client_id.empty()) {
+    const auto remotes = parse_rclone_config(ini_text);
+
+    std::string preferred;
+    cJSON *selector = cJSON_Parse(read_file(kSelectorPath, 65536).c_str());
+    if (selector) {
+        preferred = json_string(selector, "remote");
+        cJSON_Delete(selector);
+    }
+    if (preferred.empty() && remotes.find("gdrive") != remotes.end())
+        preferred = "gdrive";
+
+    auto valid = [](const IniRemote &r) {
+        return r.find("type") != r.end() && r.at("type") == "drive" &&
+               r.find("token") != r.end() && !r.at("token").empty();
+    };
+    auto chosen = remotes.end();
+    if (!preferred.empty()) {
+        const auto it = remotes.find(preferred);
+        if (it != remotes.end() && valid(it->second))
+            chosen = it;
+    }
+    if (chosen == remotes.end()) {
+        for (auto it = remotes.begin(); it != remotes.end(); ++it) {
+            if (valid(it->second)) {
+                chosen = it;
+                break;
+            }
+        }
+    }
+    if (chosen == remotes.end()) {
         if (error)
-            *error = std::string("O arquivo ") + kConfigPath + " precisa conter client_id.";
+            *error = "O rclone.conf não contém um remote 'type = drive' com token. Configure e autorize o Google Drive no Windows.";
+        return false;
+    }
+
+    const IniRemote &r = chosen->second;
+    m_remote_name = chosen->first;
+    m_client_id = r.count("client_id") ? r.at("client_id") : "";
+    m_client_secret = r.count("client_secret") ? r.at("client_secret") : "";
+    m_preferred_drive_id = r.count("team_drive") ? r.at("team_drive") : "";
+
+    if (m_client_id.empty() || m_client_secret.empty()) {
+        if (error)
+            *error = "O remote rclone precisa de client_id e client_secret próprios para renovar o token. Configure-os antes de autorizar o remote.";
+        m_config_loaded = false;
+        return false;
+    }
+
+    cJSON *token = cJSON_Parse(r.at("token").c_str());
+    if (!token) {
+        if (error)
+            *error = "O campo token do rclone.conf não contém JSON válido.";
+        m_config_loaded = false;
+        return false;
+    }
+    m_access_token = json_string(token, "access_token");
+    m_refresh_token = json_string(token, "refresh_token");
+    m_expiry_epoch = 0; /* Refresh on first use; subsequent expiry is cached locally. */
+    cJSON_Delete(token);
+    if (m_refresh_token.empty()) {
+        if (error)
+            *error = "O token do remote não contém refresh_token. Execute 'rclone config reconnect " + m_remote_name + ":' no Windows.";
+        m_config_loaded = false;
+        return false;
+    }
+
+    m_config_loaded = true;
+    /* A refreshed token is cached between launches, but only for the same remote/client. */
+    load_tokens();
+    if (m_refresh_token.empty()) {
+        if (error)
+            *error = "Não foi possível carregar o refresh token do remote.";
+        m_config_loaded = false;
         return false;
     }
     return true;
@@ -157,12 +263,20 @@ bool Client::load_tokens()
     cJSON *root = cJSON_Parse(text.c_str());
     if (!root)
         return false;
-    m_access_token = json_string(root, "access_token");
-    m_refresh_token = json_string(root, "refresh_token");
-    m_expiry_epoch = json_int(root, "expires_at", 0);
     const std::string old_client = json_string(root, "client_id");
-    if (m_client_id.empty() && !old_client.empty())
-        m_client_id = old_client;
+    const std::string old_remote = json_string(root, "remote");
+    if ((!old_client.empty() && old_client != m_client_id) ||
+        (!old_remote.empty() && old_remote != m_remote_name)) {
+        cJSON_Delete(root);
+        return false;
+    }
+    const std::string access = json_string(root, "access_token");
+    const std::string refresh = json_string(root, "refresh_token");
+    if (!access.empty())
+        m_access_token = access;
+    if (!refresh.empty())
+        m_refresh_token = refresh;
+    m_expiry_epoch = json_int(root, "expires_at", 0);
     cJSON_Delete(root);
     return !m_access_token.empty() || !m_refresh_token.empty();
 }
@@ -172,7 +286,7 @@ bool Client::has_saved_token()
     if (!load_config(nullptr))
         return false;
     std::lock_guard<std::mutex> g(m_lock);
-    return load_tokens() && !m_refresh_token.empty();
+    return !m_refresh_token.empty();
 }
 
 bool Client::save_tokens()
@@ -181,6 +295,7 @@ bool Client::save_tokens()
     if (!root)
         return false;
     cJSON_AddStringToObject(root, "client_id", m_client_id.c_str());
+    cJSON_AddStringToObject(root, "remote", m_remote_name.c_str());
     cJSON_AddStringToObject(root, "access_token", m_access_token.c_str());
     cJSON_AddStringToObject(root, "refresh_token", m_refresh_token.c_str());
     cJSON_AddNumberToObject(root, "expires_at", (double)m_expiry_epoch);
@@ -322,7 +437,8 @@ bool Client::ensure_access_token(std::string *error)
         if (error) *error = "A conta Google não está autorizada. Pressione X em Google Drive para conectar.";
         return false;
     }
-    const std::string form = form_value("client_id", m_client_id) + "&" +
+    std::string form = form_value("client_id", m_client_id) + "&" +
+        form_value("client_secret", m_client_secret) + "&" +
         form_value("refresh_token", m_refresh_token) + "&" +
         form_value("grant_type", "refresh_token");
     std::string body;
