@@ -124,8 +124,8 @@ bool request_ok(const jf::HttpResponse &r, std::string *error, const char *what)
 bool Client::load_config(std::string *error)
 {
     std::lock_guard<std::mutex> g(m_lock);
-    if (m_config_loaded)
-        return !m_client_id.empty();
+    if (m_config_loaded && !m_client_id.empty())
+        return true;
     m_config_loaded = true;
     const std::string text = read_file(kConfigPath, 65536);
     cJSON *root = cJSON_Parse(text.c_str());
