@@ -213,7 +213,7 @@ bool Client::request_token(const std::string &form, std::string *body, std::stri
     return true;
 }
 
-bool Client::begin_device_auth(std::string *verification_url, std::string *user_code,
+bool Client::begin_device_auth(std::string *verification_url, std::string *user_code, std::string *device_code,
                                int *expires_in, int *interval, std::string *error)
 {
     if (!load_config(error))
@@ -243,13 +243,9 @@ bool Client::begin_device_auth(std::string *verification_url, std::string *user_
         if (error) *error = "Google não forneceu o código de dispositivo. Confira o client_id e o tipo do OAuth.";
         return false;
     }
-    {
-        std::lock_guard<std::mutex> g(m_lock);
-        // Keep the short-lived device code in memory only. It is never written to disk.
-        m_device_code = device;
-    }
-    if (verification_url) *verification_url = url;
+        if (verification_url) *verification_url = url;
     if (user_code) *user_code = code;
+    if (device_code) *device_code = device;
     if (expires_in) *expires_in = expires;
     if (interval) *interval = every;
     return true;
